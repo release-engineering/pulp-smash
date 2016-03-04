@@ -8,6 +8,7 @@ from __future__ import unicode_literals
 
 import uuid
 
+import requests
 import unittest2
 
 from pulp_smash import api, cli, config, exceptions
@@ -128,3 +129,18 @@ def reset_squid(server_config):
     client.run((prefix + 'squid -z').split())
 
     squid_service.start()
+
+
+def is_internal():
+    """Tell if Pulp Smash is on the internal Red Hat network.
+
+    :param pulp_smash.config.ServerConfig server_config: Information about the
+        Pulp server being targeted.
+    :returns: ``True`` if on the internal network, or ``False`` otherwise.
+    """
+    cfg = config.ServerConfig('http://download.devel.redhat.com')
+    try:
+        api.Client(cfg).get('')  # Don't append a path, not even a slash
+        return True
+    except requests.exceptions.ConnectionError:
+        return False

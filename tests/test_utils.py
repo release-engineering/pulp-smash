@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 import random
 
 import mock
+import requests
 import unittest2
 
 from pulp_smash import api, cli, config, exceptions, utils
@@ -96,3 +97,20 @@ class BaseAPITestCase(unittest2.TestCase):
             client.return_value.delete.call_count,
             len(self.child.resources),
         )
+
+
+class IsInternalTestCase(unittest2.TestCase):
+    """Test :func:`pulp_smash.utils.is_internal`."""
+
+    def test_internal(self):
+        """Assert the function returns true if we are internal."""
+        with mock.patch.object(api, 'Client') as client:
+            self.assertEqual(utils.is_internal(), True)
+
+    def test_external(self):
+        """Assert the function returns false if we are external."""
+        with mock.patch.object(api, 'Client') as client:
+            client.return_value.get.side_effect = (
+                requests.exceptions.ConnectionError
+            )
+            self.assertEqual(utils.is_internal(), False)
