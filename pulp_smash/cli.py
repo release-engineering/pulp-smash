@@ -167,7 +167,10 @@ class Client(object):  # pylint:disable=too-few-public-methods
             # The SshMachine is a wrapper around the system's "ssh" binary.
             # Thus, it uses ~/.ssh/config, ~/.ssh/known_hosts, etc.
             self.machine = (  # pylint:disable=redefined-variable-type
-                plumbum.machines.SshMachine(hostname)
+                plumbum.machines.SshMachine(hostname,
+                                            user=server_config.ssh_user,
+                                            port=server_config.ssh_port,
+                                            keyfile=server_config.ssh_keyfile)
             )
 
         # How do we handle responses?

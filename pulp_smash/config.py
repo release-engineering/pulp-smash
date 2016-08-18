@@ -136,18 +136,27 @@ class ServerConfig(object):  # pylint:disable=too-many-instance-attributes
             auth=None,
             verify=None,
             version=None,
-            cli_transport=None):
+            cli_transport=None,
+            ssh_port=22,
+            ssh_keyfile=None,
+            ssh_user=None):
         """Initialize this object with needed instance attributes."""
         self.base_url = base_url
         self.auth = auth
         self.verify = verify
+        self.ssh_port = ssh_port
+        self.ssh_keyfile = ssh_keyfile
+        self.ssh_user = ssh_user
         if version is None:
             self.version = Version('1!0')
         else:
             self.version = Version(version)
         self.cli_transport = cli_transport
 
-        self._section = 'pulp'
+        self._section = os.environ.get(
+            'PULP_SMASH_CONFIG_SECTION',
+            'pulp'
+        )
         self._xdg_config_file = os.environ.get(
             'PULP_SMASH_CONFIG_FILE',
             'settings.json'
@@ -343,7 +352,8 @@ class ServerConfig(object):  # pylint:disable=too-many-instance-attributes
         gains or loses attributes.
         """
         attrs = _public_attrs(self)
-        for key in ('base_url', 'cli_transport', 'version'):
+        for key in ('base_url', 'cli_transport', 'version', "ssh_port",
+                    "ssh_keyfile", "ssh_user"):
             del attrs[key]
         if attrs['auth'] is not None:
             attrs['auth'] = tuple(attrs['auth'])
