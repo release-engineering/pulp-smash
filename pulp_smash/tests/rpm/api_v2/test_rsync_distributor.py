@@ -41,12 +41,13 @@ def gen_rsync_distributor():
         'distributor_config': {
             'remote': {
                 'auth_type': 'password',
-                'key_path': '/etc/rsync_key',
+                'ssh_identity_file': '/etc/rsync_key',
                 'login': 'cdn_user',
-                'ssh_login': 'cdn_user',
+                'ssh_user': 'cdn_user',
                 'ssh_password': 'cdn_user',
                 'root': '/home/cdn_user/cdn/',
                 'host': 'dev'},
+            'remote_units_path': 'content/origin/units/',
             'http': True,
             'https': False,
             'handler_type': 'rsync'
@@ -78,12 +79,12 @@ def setUpModule():  # pylint:disable=invalid-name
     cmd |= cli_client.machine['passwd']['cdn_user']['--stdin']
     cmd.run()
     cli_client.run(['ssh-keygen', '-f', '/etc/rsync_key',
-                    '-t', 'rsa', '-N '' -P '''])
+                    '-t', 'rsa', '-N', '', '-P', ''])
     cli_client.run('chown apache /etc/rsync_key'.split())
     cli_client.run('sudo -u cdn_user mkdir -p /home/cdn_user/.ssh/'.split())
     cli_client.run(('sudo -u cdn_user cp /etc/rsync_key.pub ' +
                     '/home/cdn_user/.ssh/authorized_keys').split())
-    cli_client.run('chown apache /home/cdn_user/.ssh/authorized_keys'.split())
+    cli_client.run('chown cdn_user /home/cdn_user/.ssh/authorized_keys'.split())
 
 
 def tearDownModule():  # pylint:disable=invalid-name
@@ -164,7 +165,7 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
             {'id': cls.rsync_distributor['id']},
         )
 
-    def test_synced_data(self):
+    def test_rsynced_data(self):
         """"Test if all content is correctly synced to remote directory.
 
         Test if all synced packages are available in remote content
@@ -216,10 +217,11 @@ class TestRsyncDistributorConfiguration(utils.BaseAPITestCase):
         cls.repo_href = client.post(REPOSITORY_PATH, body)['_href']
         cls.resources.add(cls.repo_href)  # mark for deletion
 
+    @unittest2.skip("not supported")
     def test_password_auth(self):
         """Assert ssh_key and ssh_login is required for password auth type."""
         rsync_dist_conf = gen_rsync_distributor()
-        rsync_dist_conf['distributor_config']['remote'].pop('ssh_login')
+        rsync_dist_conf['distributor_config']['remote'].pop('ssh_user')
 
         client = api.Client(self.cfg, api.echo_handler)
         with self.assertRaises(exceptions.TaskReportError):
@@ -236,7 +238,7 @@ class TestRsyncDistributorConfiguration(utils.BaseAPITestCase):
     def test_publickey_auth(self):
         """Assert key_path is required for password auth type."""
         rsync_dist_conf = gen_rsync_distributor()
-        rsync_dist_conf['distributor_config']['remote'].pop('key_path')
+        rsync_dist_conf['distributor_config']['remote'].pop('ssh_identity_file')
 
         client = api.Client(self.cfg, api.echo_handler)
         with self.assertRaises(exceptions.TaskReportError):
