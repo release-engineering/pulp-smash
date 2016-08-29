@@ -7,8 +7,12 @@ which was previously published in yum_distributor
 """
 from __future__ import unicode_literals
 
-import unittest2
+import json
 from packaging.version import Version
+import os
+import sys
+import unittest2
+import pprint
 
 from pulp_smash import api, config, utils, cli, selectors, exceptions
 from pulp_smash.compat import urljoin
@@ -42,7 +46,6 @@ def gen_rsync_distributor():
             'remote': {
                 'auth_type': 'password',
                 'ssh_identity_file': '/etc/rsync_key',
-                'login': 'cdn_user',
                 'ssh_user': 'cdn_user',
                 'ssh_password': 'cdn_user',
                 'root': '/home/cdn_user/cdn/',
@@ -68,10 +71,10 @@ def setUpModule():  # pylint:disable=invalid-name
     cfg = config.get_config()
     if cfg.version < Version('2.9'):
         raise unittest2.SkipTest('This module requires Pulp 2.9 or greater.')
-    if selectors.bug_is_untestable(1759, cfg.version):
-        raise unittest2.SkipTest(
-            'https://pulp.plan.io/issues/1759 is not testable'
-        )
+    #if selectors.bug_is_untestable(1759, cfg.version):
+    #    raise unittest2.SkipTest(
+    #        'https://pulp.plan.io/issues/1759 is not testable'
+    #    )
 
     cli_client = cli.Client(config.get_config(), cli.echo_handler)
     cli_client.run(['adduser', 'cdn_user'])
@@ -105,7 +108,31 @@ def get_repomd_xml_path(distributor_rel_url):
     )
 
 
-class TestRsyncDistributor(utils.BaseAPITestCase):
+
+class RSyncTestBase(utils.BaseAPITestCase):
+    def get_rsynced_units_content(self, units, root, content_unit_path):
+        cli_client = cli.Client(config.get_config())
+        remote_root = root
+        stats = {}
+        for unit in units:
+            storage_path = unit['metadata']['_storage_path']
+            rel_unit_path = storage_path.replace('/var/lib/pulp/content/units/', '')
+            remote_path = os.path.join(remote_root, content_unit_path,
+                                       rel_unit_path)
+            ret = cli_client.run(['stat', remote_path])
+            stats[unit['metadata']['_storage_path']] = ret.returncode
+        return stats
+
+    def get_rsynced_units_dest(self, units):
+        (success, ret) = get_remote_repo_packages(self.yum_distributor,
+                                                  self.rsync_distributor)
+        repo_packages = set([x for x in ret.split('\n') if x])
+        db_packages = set([unit['metadata']['filename']
+                           for unit in units])
+        return (db_packages - repo_packages, repo_packages - db_packages)
+    
+
+class TestRsyncDistributorPublish(RSyncTestBase):
     """Basic test for rpm rsync distributor.
 
     Test sequence:
@@ -116,10 +143,15 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
     3. Get list of packages in the repository
     4. Publish in yum distributor
     5. Publish in rsync distributor
+    6. Update remote_content_location of rsync distributor 
+    7. Publish in rsync distributor
 
-    T1. Test if all synced packages are available in remote content location
+    T1. Test if all synced packages are available in remote_content_location
         Test if all synced packages are available in repo destination
-        repository
+
+    T2. Test if all synced packages are available in remote_content_location
+        repository after it was updated
+        Test if all synced packages are available in repo destination
     """
 
     @classmethod
@@ -130,7 +162,7 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
         repository in those.
         In addition, create several variables for use by the test methods.
         """
-        super(TestRsyncDistributor, cls).setUpClass()
+        super(TestRsyncDistributorPublish, cls).setUpClass()
         cls.responses = {}
 
         client = api.Client(cls.cfg, api.json_handler)
@@ -155,6 +187,7 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
                                                     'distributors/'),
                                             rsync_dist)
 
+
         cls.responses['rpm publish'] = client.post(
             urljoin(repo_href, 'actions/publish/'),
             {'id': cls.yum_distributor['id']},
@@ -165,6 +198,24 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
             {'id': cls.rsync_distributor['id']},
         )
 
+        new_config = {}
+        new_config["distributor_config"] = rsync_dist["distributor_config"].copy()
+        new_config["distributor_config"]["remote_units_path"] = "content/foo/units"
+        new_config["delta"] = {}
+
+        client = api.Client(cls.cfg, api.json_handler)
+        response = client.put(urljoin(repo_href,
+                                      'distributors/%s/' % rsync_dist["distributor_id"]),
+                              json=new_config)
+        cls.responses["updated"] = response
+
+        cls.responses['rsync publish 2'] = client.post(
+            urljoin(repo_href, 'actions/publish/'),
+            {'id': cls.rsync_distributor['id']},
+        )
+
+
+
     def test_rsynced_data(self):
         """"Test if all content is correctly synced to remote directory.
 
@@ -172,28 +223,47 @@ class TestRsyncDistributor(utils.BaseAPITestCase):
         location Test if all synced packages are available in repo
         destination repository.
         """
-        cli_client = cli.Client(config.get_config())
-        remote_root = self.rsync_distributor['config']['remote']['root']
+
         db_rpm_units = []
         for unit in self.synced_units:
             if unit['metadata']['_content_type_id'] != 'rpm':
                 continue
             db_rpm_units.append(unit)
-            storage_path = unit['metadata']['_storage_path']
-            rel_unit_path = storage_path.replace('/var/lib/pulp/content', '')
-            ret = cli_client.run(['stat', '%s%s/%s' % (remote_root,
-                                                       'content/origin',
-                                                       rel_unit_path)])
-            self.assertFalse(ret.returncode)
 
-        (success, ret) = get_remote_repo_packages(self.yum_distributor,
-                                                  self.rsync_distributor)
-        self.assertTrue(success, ret)
-        repo_packages = set(ret.split('\n'))
-        db_packages = set([unit['metadata']['filename']
-                           for unit in db_rpm_units])
-        self.assertEqual(db_packages - repo_packages, set())
+        root = self.rsync_distributor["config"]["remote"]["root"]
+        stats = self.get_rsynced_units_content(db_rpm_units,
+                                               root,
+                                               "content/origin/units")
+        for unit, stat in stats.iteritems():
+            self.assertFalse(stat, "unit %s wasn't found on remote server" % unit)
 
+        missing_in_remote, missing_in_db = self.get_rsynced_units_dest(db_rpm_units)
+        self.assertFalse(missing_in_remote)
+        self.assertEqual(missing_in_db, set(['repodata']), missing_in_db)
+
+    def test_remote_units_path_data(self):
+        """"Test remote_units_path.
+
+        Test if all synced packages are available in remote content
+        location Test if all synced packages are available in repo
+        destination repository.
+        """
+        db_rpm_units = []
+        for unit in self.synced_units:
+            if unit['metadata']['_content_type_id'] != 'rpm':
+                continue
+            db_rpm_units.append(unit)
+
+        root = self.rsync_distributor["config"]["remote"]["root"]
+        stats = self.get_rsynced_units_content(db_rpm_units,
+                                               root,
+                                               "content/foo/units")
+        for unit, stat in stats.iteritems():
+            self.assertFalse(stat, "unit %s wasn't found on remote server" % unit)
+
+        missing_in_remote, missing_in_db = self.get_rsynced_units_dest(db_rpm_units)
+        self.assertEqual(missing_in_db, set(['repodata']), missing_in_db)
+        self.assertFalse(missing_in_remote)
 
 class TestRsyncDistributorConfiguration(utils.BaseAPITestCase):
     """Basic rsync distributor configuration validation.
@@ -240,7 +310,114 @@ class TestRsyncDistributorConfiguration(utils.BaseAPITestCase):
         rsync_dist_conf = gen_rsync_distributor()
         rsync_dist_conf['distributor_config']['remote'].pop('ssh_identity_file')
 
-        client = api.Client(self.cfg, api.echo_handler)
+        client = api.Client(self.cfg, api.json_handler_nonraising)
         with self.assertRaises(exceptions.TaskReportError):
             client.post(urljoin(self.repo_href, 'distributors/'),
                         rsync_dist_conf)
+
+class TestRsyncDistributorDelete(RSyncTestBase):
+    """Test if files are removed from remote if they are removed from pulp repo
+
+    Test sequence:
+    1. Create rpm repo with feed
+    2. Sync repo
+    4. Associate yum distributor with repository
+    4. Associate rsync distributor with repository
+    3. Get list of packages in the repository
+    4. Publish in yum distributor
+    5. Publish in rsync distributor
+    6. Update remote_content_location of rsync distributor 
+    7. Publish in rsync distributor
+
+    T1. Test if all synced packages are available in remote_content_location
+        Test if all synced packages are available in repo destination
+
+    T2. Test if all synced packages are available in remote_content_location
+        repository after it was updated
+        Test if all synced packages are available in repo destination
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        """Create a repository with a distributor, and populate it.
+
+        Associate yum and rsync distributor to repository and publish
+        repository in those.
+        In addition, create several variables for use by the test methods.
+        """
+        super(TestRsyncDistributorDelete, cls).setUpClass()
+        cls.responses = {}
+
+        client = api.Client(cls.cfg, api.json_handler)
+        body = gen_repo()
+        body['importer_config']['feed'] = RPM_FEED_URL
+        cls.repo_href = client.post(REPOSITORY_PATH, body)['_href']
+        cls.resources.add(cls.repo_href)  # mark for deletion
+        cls.responses['sync'] = utils.sync_repo(cls.cfg, cls.repo_href)
+        rsync_dist = gen_rsync_distributor()
+        cls.yum_distributor = client.post(urljoin(cls.repo_href,
+                                                  'distributors/'),
+                                          gen_distributor())
+
+        # Get contents of repository
+        cls.synced_units = client.post(
+            urljoin(cls.repo_href, 'search/units/'),
+            {'criteria': {}},
+        )
+
+        rsync_dist_conf = rsync_dist['distributor_config']
+        rsync_dist_conf['predistributor_id'] = cls.yum_distributor['id']
+        cls.rsync_distributor = client.post(urljoin(cls.repo_href,
+                                                    'distributors/'),
+                                            rsync_dist)
+
+        cls.responses['rpm publish'] = client.post(
+            urljoin(cls.repo_href, 'actions/publish/'),
+            {'id': cls.yum_distributor['id']},
+        )
+
+        cls.responses['rsync publish'] = client.post(
+            urljoin(cls.repo_href, 'actions/publish/'),
+            {'id': cls.rsync_distributor['id']},
+        )
+
+
+    def test_removed_data(self):
+        """"Test if rpms are removed from remote server.
+
+        Test if all synced packages are available in remote content
+        location Test if all synced packages are available in repo
+        destination repository.
+        """
+
+        db_rpm_units = []
+        for unit in self.synced_units:
+            if unit['metadata']['_content_type_id'] != 'rpm':
+                continue
+            db_rpm_units.append(unit)
+
+        filenames = []
+        for unit in db_rpm_units[:2]:
+            filenames.append(unit["metadata"]["filename"])
+
+        client = api.Client(self.cfg, api.json_handler)
+
+        criteria = {"type_ids": ["rpm"],
+                    "filters": {"unit": {"filename": {"$in": filenames}}}}
+        report = client.post(urljoin(self.repo_href, 'actions/unassociate/'),
+                             {"criteria": criteria})
+        unassociate_result = next(api.poll_spawned_tasks(self.cfg, report))
+
+        publish_ret1 = client.post(urljoin(self.repo_href, 'actions/publish/'),
+                                   {'id': self.yum_distributor['id']})
+        publish_ret2 = client.post(urljoin(self.repo_href, 'actions/publish/'),
+                                   {'id': self.rsync_distributor['id'],
+                                    'override_config': {"delete": True}})
+
+        (success, ret) = get_remote_repo_packages(self.yum_distributor,
+                                                  self.rsync_distributor)
+
+        missing_in_remote, missing_in_db = self.get_rsynced_units_dest(db_rpm_units)
+
+        self.assertEqual(set(missing_in_remote), set(filenames))
+        self.assertEqual(set(missing_in_db), set(['repodata']), missing_in_db)

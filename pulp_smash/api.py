@@ -120,6 +120,14 @@ def json_handler(server_config, response):
     _handle_202(server_config, response)
     return response.json()
 
+def json_handler_nonraising(server_config, response):
+    """Like ``safe_handler``, but also return a JSON-decoded response body.
+
+    Do what :func:`pulp_smash.api.safe_handler` does. In addition, decode the
+    response body as JSON and return the result.
+    """
+    _handle_202(server_config, response)
+    return response.json()
 
 class Client(object):
     """A convenience object for working with an API.
