@@ -165,7 +165,7 @@ class Client(object):  # pylint:disable=too-few-public-methods
             # The SshMachine is a wrapper around the system's "ssh" binary.
             # Thus, it uses ~/.ssh/config, ~/.ssh/known_hosts, etc.
             self.machine = (  # pylint:disable=redefined-variable-type
-                plumbum.machines.SshMachine(hostname)
+                plumbum.machines.SshMachine(hostname, port=server_config.ssh_port)
             )
 
         # How do we handle responses?
@@ -282,8 +282,11 @@ class Service(object):
             ('test -x /sbin/service', 'sysv'),
         )
         for command, service_manager in commands_managers:
+            run = client.run(command.split())
+            print(run)
             if client.run(command.split()).returncode == 0:
                 _SERVICE_MANAGERS[hostname] = service_manager
+                print (_SERVICE_MANAGERS)
                 return service_manager
         raise exceptions.NoKnownServiceManagerError(
             'Unable to determine the service manager used by {}. It does not '
